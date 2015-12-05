@@ -42,12 +42,16 @@
 #include <dirent.h>
 #include <ctype.h>
 #include <fcntl.h>
-#include <termios.h>
 #include <dlfcn.h>
 
+#ifndef AFL_FOR_ANDROID
+#include <sys/fcntl.h>
+#include <sys/shm.h>
+#else
+#include <linux/ashmem.h>
+#endif
 #include <sys/wait.h>
 #include <sys/time.h>
-#include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/resource.h>
@@ -58,6 +62,12 @@
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
 #  include <sys/sysctl.h>
 #endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
+#ifndef AFL_FOR_ANDROID
+#include <sys/termios.h>
+#else
+#include <termios.h>
+#include <sys/syscall.h>
+#endif
 
 
 /* Lots of globals, but mostly for the status UI and other things where it
@@ -285,6 +295,37 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
+#ifdef AFL_FOR_ANDROID
+/* We need to implement ashmem_create_region by ourselfs as NDK does not ship
+ * proper implementation due to possible API changes. */
+int ashmem_create_region(const char *name, size_t size)
+{
+    int fd, ret;
+
+    fd = open("/dev/ashmem", O_RDWR);
+    if (fd < 0)
+        return fd;
+
+    if (name) {
+        char buf[ASHMEM_NAME_LEN] = {0};
+
+        strlcpy(buf, name, sizeof(buf));
+        ret = ioctl(fd, ASHMEM_SET_NAME, buf);
+        if (ret < 0)
+            goto error;
+    }
+
+    ret = ioctl(fd, ASHMEM_SET_SIZE, size);
+    if (ret < 0)
+        goto error;
+
+    return fd;
+
+error:
+    close(fd);
+    return ret;
+}
+#endif /* AFL_FOR_ANDROID */
 
 /* Get unix time in milliseconds */
 
@@ -1037,13 +1078,13 @@ static inline void classify_counts(u32* mem) {
 
 
 /* Get rid of shared memory (atexit handler). */
-
 static void remove_shm(void) {
 
+#ifndef AFL_FOR_ANDROID
   shmctl(shm_id, IPC_RMID, NULL);
+#endif
 
 }
-
 
 /* Compact trace bytes into a smaller bitmap. We effectively just drop the
    count information here. This is called only sporadically, for some
@@ -1188,9 +1229,15 @@ static void setup_shm(void) {
   memset(virgin_hang, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
+#ifndef AFL_FOR_ANDROID
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
+#else
+  shm_id = ashmem_create_region("afl_ashmem", MAP_SIZE);
+
+  if (shm_id < 0) PFATAL("ashmem_create_region() failed");
+#endif /* !AFL_FOR_ANDROID */
 
   atexit(remove_shm);
 
@@ -1205,10 +1252,15 @@ static void setup_shm(void) {
 
   ck_free(shm_str);
 
+#ifndef AFL_FOR_ANDROID
   trace_bits = shmat(shm_id, NULL, 0);
-  
-  if (!trace_bits) PFATAL("shmat() failed");
 
+  if (!trace_bits) PFATAL("shmat() failed");
+#else
+  trace_bits = mmap(NULL, MAP_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, shm_id, 0);
+
+  if (!trace_bits) PFATAL("mmap() failed");
+#endif /* !AFL_FOR_ANDROID */
 }
 
 
@@ -3722,6 +3774,7 @@ static void show_stats(void) {
 
   SAYF(TERM_HOME);
 
+#ifndef AFL_FOR_ANDROID
   if (term_too_small) {
 
     SAYF(cBRI "Your terminal is too small to display the UI.\n"
@@ -3730,6 +3783,7 @@ static void show_stats(void) {
     return;
 
   }
+#endif /* !AFL_FOR_ANDROID */
 
   /* Let's start by drawing a centered banner. */
 

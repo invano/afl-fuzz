@@ -222,11 +222,24 @@ static const u8* main_payload_32 =
   "  call  atoi\n"
   "  addl  $4, %esp\n"
   "\n"
+#ifndef AFL_FOR_ANDROID
   "  pushl $0          /* shmat flags    */\n"
   "  pushl $0          /* requested addr */\n"
   "  pushl %eax        /* SHM ID         */\n"
   "  call  shmat\n"
   "  addl  $12, %esp\n"
+#else
+  // WA: Bionic removes support for shm, Android offers ashmem instead
+  //     Client simply mmaps provided fd and voila
+  "  pushl $0                       /* offset                      */\n"
+  "  pushl %eax                     /* fd                          */\n"
+  "  pushl $1                       /* flags (MAP_SHARED)          */\n"
+  "  pushl $3                       /* prot (PROT_READ|PROT_WRITE) */\n"
+  "  pushl $" STRINGIFY(MAP_SIZE) " /* length                      */\n"
+  "  pushl $0                       /* addr                        */\n"
+  "  call  mmap\n"
+  "  addl  $24, %esp\n"
+#endif
   "\n"
   "  cmpl $-1, %eax\n"
   "  je   __afl_setup_abort\n"
@@ -502,10 +515,23 @@ static const u8* main_payload_64 =
   "  movq  %rax, %rdi\n"
   CALL_L64("atoi")
   "\n"
+#ifndef AFL_FOR_ANDROID
   "  xorq %rdx, %rdx   /* shmat flags    */\n"
   "  xorq %rsi, %rsi   /* requested addr */\n"
   "  movq %rax, %rdi   /* SHM ID         */\n"
   CALL_L64("shmat")
+#else
+  // WA: Bionic removes support for shm, Android offers ashmem instead
+  //     Client simply mmaps provided fd and voila
+  "  pushq $0                       /* offset                      */\n"
+  "  pushq %rax                     /* fd                          */\n"
+  "  pushq $1                       /* flags (MAP_SHARED)          */\n"
+  "  pushq $3                       /* prot (PROT_READ|PROT_WRITE) */\n"
+  "  pushq $" STRINGIFY(MAP_SIZE) " /* length                      */\n"
+  "  pushq $0                       /* addr                        */\n"
+  CALL_L64("mmap")
+  "  addq  $24, %rsp\n"
+#endif
   "\n"
   "  cmpq $-1, %rax\n"
   "  je   __afl_setup_abort\n"
